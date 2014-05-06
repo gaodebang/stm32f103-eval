@@ -1,0 +1,258 @@
+/*
+*********************************************************************************************************
+*
+*	模块名称 : 定时器模块
+*	文件名称 : bsp_timer.c
+*	版    本 : V1.0
+*	说    明 : 配置systick定时器作为系统滴答定时器。缺省定时周期为1ms。
+*			   实现了ms级别延迟函数（精度1ms） 和us级延迟函数
+*			   实现了系统运行时间函数（1ms单位）
+*
+*********************************************************************************************************
+*/
+
+#include "bsp.h"
+
+volatile uint32_t Sys_Time = 0;
+
+static volatile uint32_t DelayCount = 0;
+static volatile uint8_t TimeOutFlag = 0;
+
+/*
+*********************************************************************************************************
+*	函 数 名: bsp_DelayMS
+*	功能说明: ms级延迟，延迟精度为正负1ms
+*	形    参:  n : 延迟长度，单位1 ms。 n 应大于2
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void bsp_DelayMS(uint32_t n)
+{
+	if (n == 0)
+	{
+		return;
+	}
+	else if (n == 1)
+	{
+		n = 2;
+	}
+
+	DISABLE_INT();  			/* 关中断 */
+
+	DelayCount = n;
+	TimeOutFlag = 0;
+
+	ENABLE_INT();  				/* 开中断 */
+
+	while (1)
+	{
+		bsp_Idle();				/* CPU空闲执行的操作， 见 bsp.c 和 bsp.h 文件 */
+		if (TimeOutFlag == 1)
+		{
+			break;
+		}
+	}
+}
+
+/*
+*********************************************************************************************************
+*    函 数 名: bsp_DelayUS
+*    功能说明: us级延迟。 必须在systick定时器启动后才能调用此函数。
+*    形    参:  n : 延迟长度，单位1 us
+*    返 回 值: 无
+*********************************************************************************************************
+*/
+void bsp_DelayUS(uint32_t n)
+{
+    uint32_t ticks;
+    uint32_t told;
+    uint32_t tnow;
+    uint32_t tcnt = 0;
+    uint32_t reload;
+       
+		reload = SysTick->LOAD;                
+    ticks = n * (SystemCoreClock / 1000000);	 /* 需要的节拍数 */  
+    
+    tcnt = 0;
+    told = SysTick->VAL;             /* 刚进入时的计数器值 */
+
+    while (1)
+    {
+        tnow = SysTick->VAL;
+        if (tnow != told)
+        {    
+            /* SYSTICK是一个递减的计数器 */    
+            if (tnow < told)
+            {
+                tcnt += told - tnow;    
+            }
+            /* 重新装载递减 */
+            else
+            {
+                tcnt += reload - tnow + told;    
+            }        
+            told = tnow;
+
+            /* 时间超过/等于要延迟的时间,则退出 */
+            if (tcnt >= ticks)
+            {
+            	break;
+            }
+        }  
+    }
+} 
+
+/*
+*********************************************************************************************************
+*	函 数 名: bsp_GetRunTime
+*	功能说明: 获取CPU运行时间，单位1ms。最长可以表示 24.85天，如果你的产品连续运行时间超过这个数，则必须考虑溢出问题
+*	形    参:  无
+*	返 回 值: CPU运行时间，单位1ms
+*********************************************************************************************************
+*/
+uint32_t bsp_GetRunTime(void)
+{
+	uint32_t runtime;
+
+	DISABLE_INT();  	/* 关中断 */
+
+	runtime = Sys_Time;	/* 这个变量在Systick中断中被改写，因此需要关中断进行保护 */
+
+	ENABLE_INT();  		/* 开中断 */
+
+	return runtime;
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: bsp_InitTimer
+*	功能说明: 配置systick中断，并初始化软件定时器变量
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void bsp_InitTimer(void)
+{
+	/*
+		配置systic中断周期为1ms，并启动systick中断。
+    	SysTick_Config() 函数的形参表示内核时钟多少个周期后触发一次Systick定时中断.
+	    	-- SystemCoreClock / 1000  表示定时频率为 1000Hz， 也就是定时周期为  1ms
+	    	-- SystemCoreClock / 500   表示定时频率为 500Hz，  也就是定时周期为  2ms
+	    	-- SystemCoreClock / 2000  表示定时频率为 2000Hz， 也就是定时周期为  500us
+
+    	对于常规的应用，我们一般取定时周期1ms。对于低速CPU或者低功耗应用，可以设置定时周期为 10ms
+    */
+	SysTick_Config(SystemCoreClock / 1000);
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: SysTick_ISR
+*	功能说明: SysTick中断服务程序，每隔1ms进入1次
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void SysTick_ISR(void)
+{
+	Sys_Time++;
+	/* 每隔1ms进来1次 （仅用于 bsp_DelayMS） */
+	if (DelayCount > 0)
+	{
+		if (--DelayCount == 0)
+		{
+			TimeOutFlag = 1;
+		}
+	}
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: Ceshi_Task
+*	功能说明: 测试函数实现周期性执行操作。
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void Ceshi_Task0(void)
+{
+    static uint32_t sys_time, time_ms = 0, time_add_up = 0;
+	
+	DISABLE_INT();  	/* 关中断 */
+	sys_time = Sys_Time;	/* 这个变量在Systick中断中被改写，因此需要关中断进行保护 */
+	ENABLE_INT();  		/* 开中断 */
+	
+	if(time_ms != sys_time)
+	{
+		time_ms = sys_time;
+		if(++time_add_up >= 1000)
+		{
+				time_add_up = 0;
+				
+		}
+	}
+}
+
+void Ceshi_Task1(void)
+{
+  static uint32_t sys_time, time_ms = 0, time_add_up = 0, work_time_max = 1000;
+	uint32_t offset_time_ticks = 0;
+	uint8_t timeout_flag = 0;
+	
+	uint32_t err;
+	uint32_t iTime1, iTime2;
+	
+	DISABLE_INT();  	/* 关中断 */
+	sys_time = Sys_Time;	/* 这个变量在Systick中断中被改写，因此需要关中断进行保护 */
+	ENABLE_INT();  		/* 开中断 */
+	
+	if(time_ms != sys_time)
+	{
+		if(time_ms < sys_time)
+		{
+			offset_time_ticks = sys_time - time_ms;
+			time_ms = sys_time;
+			if(((uint64_t)offset_time_ticks  + (uint64_t)time_add_up) > UINT_LEAST32_MAX)
+			{
+				timeout_flag = 1;
+				time_add_up = 0;
+			}
+			else if((offset_time_ticks  + time_add_up) > work_time_max)
+			{
+				timeout_flag = 1;
+				time_add_up = 0;
+			}
+			else
+			{
+				time_add_up += offset_time_ticks;
+			}
+		}
+		else
+		{
+			offset_time_ticks = UINT_LEAST32_MAX + sys_time - time_ms;
+			time_ms = sys_time;
+			if(((uint64_t)offset_time_ticks  + (uint64_t)time_add_up) > UINT_LEAST32_MAX)
+			{
+				timeout_flag = 1;
+				time_add_up = 0;
+			}
+			else if((offset_time_ticks  + time_add_up) > work_time_max)
+			{
+				timeout_flag = 1;
+				time_add_up = 0;
+			}
+			else
+			{
+				time_add_up += offset_time_ticks;
+			}
+		}		
+		if(timeout_flag == 1)
+		{
+			timeout_flag = 0;
+			err = err;
+			iTime1 = bsp_GetRunTime();
+			iTime2 = bsp_GetRunTime();
+			printf("\r\ntime = %dms\r\n", iTime2 - iTime1);
+		}
+	}
+}
